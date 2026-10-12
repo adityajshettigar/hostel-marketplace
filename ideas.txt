@@ -1,0 +1,495 @@
+# Smart Hostel Marketplace — Codex Build Playbook
+
+Paste each numbered prompt into Codex in order. Each phase assumes the previous one is committed. Everything is free-tier: Next.js + Docker locally, free-tier Postgres/Redis/object storage in prod, no paid AI API required.
+
+**One honesty note before you start:** a payment escrow that is *"100% foolproof, zero security risk"* isn't something any codebase (free or paid, student or FAANG) can honestly promise — real escrow systems go through audits, pen-tests, and PCI/RBI compliance review before touching real money. What Codex *can* build well is a **correctly engineered escrow simulation**: real state machine, hashed PIN, idempotent transitions, audit log, Razorpay/Cashfree **test mode**. That's what Phase 6 below does. Treat it as production-*grade code quality*, not production-*cleared for real money* — say so explicitly in your report/demo.
+
+---
+
+## 0. Stack decisions (context for you, not a prompt)
+
+| Concern | Choice | Why free & simple |
+|---|---|---|
+| Frontend | Next.js 14 (App Router) | You already asked for it |
+| "Microservices" | 5 independent Next.js (API-route-only) apps, each its own repo folder, own Dockerfile, own package.json | Each teammate runs `npm run dev` in their own folder — real service isolation, same language everywhere so nobody's blocked learning a 2nd framework |
+| Inter-service calls | Plain REST over Docker network / HTTPS in prod | No message broker needed for a 5-person student build |
+| DB | One Postgres **instance**, one **schema per service** (`identity`, `marketplace`, `communication`, `transaction`, `ai`) | Simulates "DB per service" ownership without paying for 5 separate hosted DBs |
+| Cache/timer | Redis (Upstash free tier) | Needed for the 48h escrow timer |
+| Auth | JWT issued by identity-service, verified by all others via shared public key | Standard, no paid IdP |
+| File storage | Cloudinary free tier | Product images, dispute evidence |
+| Payments | Razorpay **test mode** | Free, gives you real webhook/signature flow |
+| Email | Resend free tier or Gmail SMTP | College-email verification |
+| AI | Rule/heuristic-first (median pricing, category from keywords) with an *optional* free Hugging Face inference call — no paid OpenAI key required | Keeps the whole build $0 |
+| Deploy | Frontend → Vercel free; each service → Render free web service (or Railway free trial); DB → Neon/Supabase free Postgres; Redis → Upstash free | All $0 tiers |
+
+Folder layout Codex should produce:
+```
+hostel-marketplace/
+├── frontend/                  (Next.js UI, Bauhaus design system)
+├── services/
+│   ├── identity-service/      (auth, users, hostel identity)
+│   ├── marketplace-service/   (listings, search, offers/negotiation)
+│   ├── communication-service/ (chat, chat-safety, notifications)
+│   ├── transaction-service/   (transactions, escrow, PIN/QR, disputes)
+│   └── ai-service/            (listing AI, price AI, recommendations, risk)
+├── gateway/                   (thin reverse-proxy, optional but recommended)
+├── infra/
+│   ├── docker-compose.yml
+│   └── init-db/               (per-schema SQL init scripts)
+└── docs/                      (SRS docs you already have — drop them here)
+```
+
+---
+
+## PHASE 1 — Repo & Docker scaffolding
+
+```
+Create a monorepo called "hostel-marketplace" with this exact structure:
+
+hostel-marketplace/
+  frontend/
+  services/identity-service/
+  services/marketplace-service/
+  services/communication-service/
+  services/transaction-service/
+  services/ai-service/
+  gateway/
+  infra/docker-compose.yml
+  infra/init-db/
+  docs/
+  README.md
+  .gitignore
+  .env.example (root-level, lists every env var every service will need, no values)
+
+Each folder under services/ and frontend/ and gateway/ should be a standalone
+Next.js 14 (App Router, TypeScript) project with its own package.json,
+tsconfig.json, and Dockerfile (multi-stage, node:20-alpine, production build).
+The service folders only need the `app/api/` route tree — no pages.
+
+Write infra/docker-compose.yml to bring up:
+- postgres:16-alpine (single instance, named volume, exposes 5432)
+- redis:7-alpine (exposes 6379)
+- each of the 5 services (build from their own Dockerfile, own port 4001-4005)
+- gateway (port 4000)
+- frontend (port 3000)
+All services get their env vars from a single root .env file via docker-compose
+env_file. Add healthchecks for postgres and redis, and `depends_on: condition:
+service_healthy` for every service.
+
+Write infra/init-db/001-schemas.sql that creates 5 Postgres schemas:
+identity, marketplace, communication, transaction, ai — with a dedicated
+Postgres role per schema (least-privilege: each service's DB user can only
+touch its own schema).
+
+Write the root README.md explaining: what the project is (one paragraph,
+based on the SRS — I'll paste it in below), the folder structure, how to run
+`docker compose up` for the whole system, and how one person can run just
+their own service with `npm run dev` inside their service folder while
+pointing at the shared docker-compose postgres/redis.
+
+Here is the SRS abstract and objectives for context (paste your Section 1-2
+abstract/problem statement from the SRS doc here).
+
+Do not implement any business logic yet — this phase is scaffolding only.
+```
+
+---
+
+## PHASE 2 — identity-service
+
+```
+Inside services/identity-service, implement a Next.js API-route microservice
+covering registration, login, session security, and hostel identity, per this
+spec (from the SRS):
+
+- POST /api/auth/register: college_email (must match an allow-listed college
+  domain list in env var COLLEGE_EMAIL_DOMAINS), full_name, hostel_block,
+  room_number, upi_vpa (optional at registration). Send a verification email
+  (Resend API) with a signed, expiring token link. Store user in Postgres
+  schema "identity", table users, password hashed with argon2.
+- GET /api/auth/verify?token=...: verifies email, sets verification_status =
+  VERIFIED.
+- POST /api/auth/login: email+password → argon2 verify → issue a short-lived
+  JWT access token (15 min) + a rotating refresh token (httpOnly cookie, 7
+  days) signed with RS256 using a keypair in env vars. Bind the session to a
+  device fingerprint hash (from a client-supplied fingerprint header) stored
+  in a sessions table.
+- POST /api/auth/refresh: rotate refresh token, reject reused/expired ones
+  (detect token-reuse attacks by revoking the whole session family).
+- Session-IP change handling: if login IP differs from the session's last
+  known IP, require a 2FA step (POST /api/auth/2fa/request generates a 6-digit
+  OTP emailed to the user, POST /api/auth/2fa/verify checks it) before issuing
+  tokens, per SRS 5.7.3.
+- GET /api/users/me and PATCH /api/users/me for profile + hostel_block +
+  room_number + upi_vpa updates.
+- GET /api/users/:id/public — returns only non-sensitive fields (name,
+  hostel_block, verification badge) for other services to display seller
+  info, per the SRS data-classification rules (UPI VPA and email are never
+  exposed here).
+- Expose a JWKS endpoint GET /.well-known/jwks.json (public key only) so other
+  services can verify JWTs without calling back into identity-service.
+
+Use Zod for input validation on every route, rate-limit /api/auth/login and
+/api/auth/2fa/verify (5 requests/minute/IP, in-memory or Redis-based), and
+write integration tests (Vitest) for register→verify→login→refresh and for
+the new-IP-triggers-2FA path. Add a Dockerfile HEALTHCHECK hitting a
+GET /api/health route.
+```
+
+---
+
+## PHASE 3 — marketplace-service
+
+```
+Inside services/marketplace-service, implement listings, search/filter, and
+offer/negotiation, per the SRS, storing data in the "marketplace" Postgres
+schema:
+
+- POST /api/listings (seller only — verify JWT from identity-service's JWKS,
+  require verification_status VERIFIED): body = product name, description,
+  category (enum Books|Electronics|Furniture|Appliances|Food), condition,
+  price, quantity, image URLs (already uploaded to Cloudinary by the
+  frontend — this service just stores the URLs).
+- PATCH /api/listings/:id, DELETE /api/listings/:id (owner-only, check
+  seller_id === JWT sub).
+- GET /api/listings — supports ?q=keyword, ?category=, ?block= (block-wise
+  filter per SRS 5.2.2 — needs the requester's hostel_block, read from the
+  JWT claims which identity-service should embed at login), pagination.
+- GET /api/listings/:id.
+- POST /api/offers: buyer proposes offered_price + quantity on a listing.
+- PATCH /api/offers/:id/accept | /reject | /counter (seller only) — accepted
+  offers transition to status ACCEPTED and are the only thing
+  transaction-service is allowed to read as "deal confirmed" (expose GET
+  /api/offers/:id for transaction-service to verify).
+- Enforce the state machine PENDING → ACCEPTED|REJECTED|COUNTERED|WITHDRAWN|
+  EXPIRED (cron/edge function to auto-EXPIRE offers older than 48h).
+
+Add a Postgres full-text-search index on title+description for the keyword
+search. Add Zod validation, ownership checks on every mutating route, and
+Vitest tests for: create→edit→delete listing, block-wise filter correctness,
+and the full offer negotiation state machine (including rejecting an
+already-accepted offer). Add GET /api/health.
+```
+
+---
+
+## PHASE 4 — communication-service
+
+```
+Inside services/communication-service, implement chat + chat-safety +
+notifications in the "communication" Postgres schema:
+
+- POST /api/conversations (buyer starts a conversation on a listing_id —
+  service should call marketplace-service's GET /api/listings/:id to fetch
+  seller_id, don't trust a client-supplied seller_id).
+- WebSocket or Server-Sent-Events endpoint for real-time delivery
+  (use Socket.IO server co-located in this service) — POST /api/messages
+  persists, then emits over the socket to the recipient if online.
+- Chat Obfuscation Defense (SRS 5.7.2), implemented as a pure, unit-testable
+  function `normalizeAndScan(text: string)`:
+    1. lowercase, strip spaces/dashes/dots,
+    2. convert spelled-out digits ("nine"→"9", "double" prefix handling
+       optional),
+    3. regex-match 10-digit Indian phone patterns and UPI VPA patterns
+       (username@bankhandle),
+    4. return { verdict: SAFE|CONTACT_INFO|UPI_INFO|OFF_PLATFORM_REQUEST,
+       normalized_text }.
+  If verdict !== SAFE, do NOT deliver the message to the recipient — store it
+  with safety_result set, return a 200 with a warning payload the frontend
+  turns into a toast, per SRS.
+  Write at least 15 unit test cases: plain numbers, space-separated,
+  dash-separated, spelled-out digits, UPI ids, false-positive-prone normal
+  messages containing numbers ("meet at 9"), and obfuscated combos.
+- POST /api/notifications (internal-only route, protected by a shared
+  service-to-service API key header, not a user JWT) — other services call
+  this to create notifications; GET /api/notifications (user's own),
+  PATCH /api/notifications/:id/read.
+
+Add Zod validation and Vitest tests for the normalization function
+(prioritize this — it's the security-critical piece) plus an integration test
+for conversation creation authorization (only the listing's actual buyer/
+seller can post in it). Add GET /api/health.
+```
+
+---
+
+## PHASE 5 — ai-service
+
+```
+Inside services/ai-service, implement listing assistance, price suggestion,
+and recommendations as clearly-labeled ASSISTIVE, non-authoritative
+suggestions, in the "ai" Postgres schema (just logs suggestions +
+model_version + accepted_by_user, per the SRS AI-suggestion entities):
+
+- POST /api/suggest/listing: input { imageUrl, category?, condition? } →
+  output { suggestedTitle, suggestedCategory, suggestedDescription }.
+  Implement this WITHOUT a paid API: use a simple rule engine keyed off image
+  filename/EXIF-free heuristics is not reliable, so instead call a FREE
+  Hugging Face Inference API image-captioning model (env var
+  HF_API_TOKEN — I will add this key) to get a caption, then template it into
+  title/description, and map caption keywords to the fixed category enum via
+  a keyword dictionary. If HF_API_TOKEN is missing or the call fails, fall
+  back to a pure template using only the seller-provided category/condition
+  (SRS 7.12 AI-failure-handling — must never hard-fail the listing flow).
+- POST /api/suggest/price: input item attributes → look up
+  Median(price | category) and Median(price | category, condition) from
+  marketplace-service's historical SOLD listings (call its API), return
+  { low, mid, high } as a range, never a single "guaranteed" number.
+- GET /api/recommendations?userId=: for now (no real interaction data yet),
+  implement Baseline "category matching" — fetch the user's last N viewed/
+  searched categories from communication/marketplace interaction logs (add a
+  simple POST /api/interactions endpoint other services/frontend can log to)
+  and return marketplace-service listings from those categories, excluding
+  ones the user already owns/rejected. Document in code comments that this is
+  the E7.11 cold-start-safe baseline, and structure the ranker function so a
+  real model can be swapped in later without changing the API contract.
+- Every route must validate and clamp output (price > 0, category in the
+  fixed enum, title non-empty) before returning — per SRS 7.8 AI Output
+  Validation — and every response must include model_version and a boolean
+  the frontend uses to always show "AI suggestion — edit before posting".
+
+Add Vitest tests for the fallback-on-failure paths (HF API down → template
+still returns valid output) and for output validation clamping. Add
+GET /api/health.
+```
+
+---
+
+## PHASE 6 — transaction-service (escrow, handover, disputes)
+
+```
+Inside services/transaction-service, implement the transaction lifecycle,
+Smart Escrow simulation, PIN/QR handover, 48h auto-release, and disputes, in
+the "transaction" Postgres schema. This is the most security-sensitive
+service — follow every point below exactly:
+
+STATE MACHINE (enforce transitions in a single DB function/transaction, never
+allow a skip):
+DEAL_CONFIRMED → ESCROW_PENDING → ESCROW_LOCKED → HANDOVER_PENDING →
+HANDOVER_VERIFIED → COMPLETED
+Side paths: ESCROW_LOCKED → DISPUTED → ADMIN_REVIEW → (RESOLVED→COMPLETED or
+REFUNDED); HANDOVER_PENDING → (timeout, no state skip) stays until verified,
+disputed, or auto-released.
+
+1. POST /api/transactions: called only after marketplace-service confirms an
+   offer is ACCEPTED (verify by calling marketplace-service, don't trust the
+   client). Creates the transaction row, status DEAL_CONFIRMED.
+
+2. POST /api/transactions/:id/escrow/init: creates a Razorpay Order in
+   **test mode** (env vars RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET — I will add
+   these) for the agreed_price, status → ESCROW_PENDING. Return the order id
+   to the frontend for Razorpay Checkout.
+
+3. POST /api/webhooks/razorpay: verify the X-Razorpay-Signature HMAC against
+   the raw request body using RAZORPAY_WEBHOOK_SECRET before touching
+   anything (reject unsigned/invalid immediately, log the attempt). On a
+   verified `payment.captured` event, atomically (single DB transaction):
+   mark escrow LOCKED, generate a cryptographically random 4-digit PIN
+   (crypto.randomInt), store ONLY an argon2 hash of the PIN (never plaintext)
+   plus a signed, encrypted QR payload (AES-256-GCM, key from env
+   QR_ENCRYPTION_KEY) that encodes {transactionId, expiresAt}, set
+   release_deadline = now + 48h, status → HANDOVER_PENDING. Make this webhook
+   idempotent (Razorpay retries webhooks — dedupe on event id).
+
+4. POST /api/transactions/:id/verify-handover: seller submits either the PIN
+   or a scanned QR string.
+   - Rate limit: max 3 attempts per transaction (SRS 5.7.1) — on the 3rd wrong
+     attempt, lock the endpoint for that transaction (status field
+     handover_locked = true) and require an admin unlock; log every attempt
+     (success and failure) to an append-only audit table.
+   - Verify PIN via argon2.verify against the stored hash; verify QR by
+     decrypting and checking transactionId match + not expired.
+   - On success, inside one DB transaction: status → HANDOVER_VERIFIED, then
+     immediately attempt the Razorpay payout/transfer call (test mode) to the
+     seller's linked account, on success status → COMPLETED, on payout
+     failure status stays HANDOVER_VERIFIED with a retry job (do NOT mark
+     COMPLETED unless the payout call actually succeeded — no "assume it
+     worked").
+   - Make the whole verify+payout path idempotent (a duplicate/replayed
+     request must not double-pay) using a unique idempotency key per
+     transaction stored before calling Razorpay.
+
+5. Auto-release: a Redis-backed job (BullMQ, using the Upstash Redis
+   connection) scheduled at escrow-lock time for release_deadline. On fire,
+   re-check current status is still HANDOVER_PENDING (not disputed, not
+   already completed) before releasing — recheck-then-act inside the same
+   flow used for manual verification, so there is exactly one release code
+   path, not two. Must survive a service restart (recover pending jobs from
+   the DB, not just from Redis, on boot — SRS 5.4.5 / NFR reliability).
+
+6. POST /api/transactions/:id/dispute: buyer only, requires at least one
+   uploaded evidence file URL (Cloudinary), sets status → DISPUTED, funds
+   frozen (release job for that transaction is cancelled/no-ops if it fires),
+   creates an admin_tickets row. PATCH /api/disputes/:id/resolve (admin-only,
+   require a second admin's confirmation token if amount > env var
+   DUAL_AUTH_THRESHOLD, per SRS 5.7.4) → REFUNDED or back to COMPLETED, always
+   appended to the immutable audit log (audit rows are insert-only, no
+   UPDATE/DELETE grants on that table for the service's own DB role).
+
+Non-negotiables to implement, not skip:
+- All money fields are integers (paise), never floats.
+- Every state-changing route runs inside a single Postgres transaction with
+  `SELECT ... FOR UPDATE` on the transaction row to prevent race conditions
+  (e.g., simultaneous verify-handover + auto-release timer firing).
+- Plaintext PIN is never logged, never stored, never returned in any API
+  response after the initial generation moment (frontend shows it once to
+  the buyer at generation time only).
+- Write Vitest tests for: happy path end-to-end, 3-failed-PIN-attempts-locks,
+  webhook-signature-rejection, duplicate-webhook-idempotency,
+  dispute-freezes-and-blocks-auto-release, and
+  auto-release-does-not-fire-if-already-disputed.
+
+At the top of this service's README, add the honesty note: "This escrow
+implementation uses Razorpay TEST MODE and has not undergone external
+security audit or PCI/RBI compliance review — it is a correctly-engineered
+simulation suitable for a student/demo deployment, not a production payments
+system." Add GET /api/health.
+```
+
+---
+
+## PHASE 7 — gateway
+
+```
+Inside gateway/, implement a thin Next.js API-route reverse proxy that:
+- Exposes /api/identity/*, /api/marketplace/*, /api/communication/*,
+  /api/transaction/*, /api/ai/* and forwards each to the matching internal
+  service URL (from env vars SERVICE_IDENTITY_URL etc, defaulting to the
+  docker-compose service names).
+- Verifies the incoming JWT (using identity-service's JWKS endpoint, cached
+  with a 10-min TTL) on every route except /api/identity/auth/* and
+  strips/re-signs nothing — just forwards the original Authorization header
+  plus adds an internal X-Service-Key header (shared secret, env var
+  INTERNAL_SERVICE_KEY) so downstream services can trust gateway-forwarded
+  requests and reject any direct call missing that header.
+- Adds basic rate limiting (per-IP, in-memory token bucket) and structured
+  request logging (method, path, status, latency) to stdout.
+- GET /api/health aggregates each downstream service's /api/health into one
+  JSON status report.
+```
+
+---
+
+## PHASE 8 — frontend
+
+```
+Inside frontend/, build the Next.js 14 App Router UI for the Smart Hostel
+Marketplace, calling everything through the gateway (NEXT_PUBLIC_GATEWAY_URL).
+Apply the Bauhaus design system exactly as specified below (paste your full
+Bauhaus design-system document here — colors #D02020/#1040C0/#F0C020/#121212,
+'Outfit' font, hard offset shadows, thick borders, geometric decorations,
+etc.) using Tailwind CSS with the tokens set up as CSS variables in
+globals.css and a tailwind.config.ts theme extension, not one-off inline
+styles.
+
+Pages to build, each matching the SRS functional requirements:
+- / (marketplace grid with hover tooltip overlay per SRS 5.2.1, sticky
+  block-wise toggle per 5.2.2, category filter, search bar)
+- /login, /register (college-email + hostel block/room + UPI VPA form)
+- /listings/[id] (detail view, "Verified Resident: [Block/Room]" badge per
+  5.2.3, make-offer form)
+- /sell/new (image upload to Cloudinary, "Get AI Suggestions" button calling
+  ai-service, editable AI output with a visible "AI suggestion — please
+  review" label)
+- /chat/[conversationId] (real-time via the communication-service socket,
+  shows the warning toast on blocked messages)
+- /dashboard (active listings, offers, transactions, notifications)
+- /transactions/[id] (escrow status stepper, Razorpay Checkout trigger, the
+  aggressive red PIN warning banner per SRS 5.4.3 shown to the seller, PIN
+  entry / QR scan UI, dispute form with evidence upload)
+- /admin (disputes queue, audit log viewer, escrow-freeze override with
+  dual-authorization confirmation UI)
+
+Build reusable components first (Button, Card, Badge, GeometricDecoration,
+Toast) as a small design-system module under frontend/components/ui before
+building pages, matching the design doc's component stylings section exactly
+(hard shadows, press effect, corner shape decorations).
+
+Use React Query (TanStack Query) for all API calls, Zod + react-hook-form for
+every form, and put JWT handling in an httpOnly-cookie-based auth context
+(no localStorage for tokens).
+```
+
+---
+
+## PHASE 9 — security hardening pass
+
+```
+Do a security review pass across every service in this monorepo. For each
+service, add/verify:
+1. helmet-equivalent security headers on every Next.js API response
+   (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options).
+2. CORS locked to the known frontend/gateway origins only, from env vars.
+3. Every route that accepts a body uses Zod parsing before touching the DB —
+   grep for any route missing this and fix it.
+4. All SQL is parameterized (using the query builder/ORM already in place) —
+   grep for any raw string-concatenated SQL and fix it.
+5. Secrets are read only from process.env, never hardcoded; add a
+   scripts/check-env.ts that fails the Docker build if any required env var
+   listed in the root .env.example is missing at container start.
+6. Add a SECURITY.md summarizing: JWT rotation policy, PIN hashing, webhook
+   signature verification, rate limits in place, and the escrow honesty note
+   from Phase 6.
+Produce a short markdown checklist report of what you found and fixed.
+```
+
+---
+
+## PHASE 10 — CI
+
+```
+Add a GitHub Actions workflow .github/workflows/ci.yml that, on every push:
+- runs `npm ci && npm run lint && npm run test` in frontend/, gateway/, and
+  each services/* folder in parallel matrix jobs
+- builds each service's Docker image (no push, just build-check)
+This should use only GitHub's free Actions minutes — no paid runners.
+```
+
+---
+
+## PHASE 11 — deployment (all free tier)
+
+```
+Write docs/DEPLOYMENT.md with exact steps to deploy this project for free:
+1. Database: create a free Neon (or Supabase) Postgres project, run
+   infra/init-db/001-schemas.sql against it via `psql`, note the 5 schema
+   connection strings needed.
+2. Redis: create a free Upstash Redis database, note the REST/TCP URL.
+3. Each of the 5 services + gateway: deploy as a separate free Render Web
+   Service (Docker runtime, point at the matching Dockerfile/subfolder),
+   wire the DATABASE_URL/REDIS_URL/JWT keys/INTERNAL_SERVICE_KEY env vars
+   per service from the root .env.example list.
+4. Frontend: deploy to Vercel free tier, set NEXT_PUBLIC_GATEWAY_URL to the
+   deployed gateway's Render URL.
+5. Razorpay: switch to a real Razorpay test-mode account (still free), set
+   RAZORPAY_KEY_ID/SECRET/WEBHOOK_SECRET on transaction-service, and add the
+   deployed webhook URL in the Razorpay dashboard.
+6. Cloudinary: free tier account, set CLOUDINARY_URL.
+7. Resend: free tier account, set RESEND_API_KEY.
+List every one of these as a numbered checklist with placeholders for the
+values I'll paste in myself — do not invent or guess any key.
+```
+
+---
+
+## API keys / accounts YOU need to create and paste in (Codex should never invent these)
+
+| Env var | Where to get it (free tier) | Used by |
+|---|---|---|
+| `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` | generate yourself (`openssl genrsa`) | identity-service, gateway |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Razorpay dashboard, **Test Mode** | transaction-service |
+| `RAZORPAY_WEBHOOK_SECRET` | Razorpay dashboard → Webhooks | transaction-service |
+| `QR_ENCRYPTION_KEY` | generate yourself (32-byte random) | transaction-service |
+| `INTERNAL_SERVICE_KEY` | generate yourself (any long random string) | gateway + all services |
+| `RESEND_API_KEY` | resend.com free tier | identity-service |
+| `CLOUDINARY_URL` | cloudinary.com free tier | frontend, ai-service, transaction-service (evidence) |
+| `HF_API_TOKEN` | huggingface.co free inference API token | ai-service |
+| `DATABASE_URL` (×1, shared, schema-scoped users) | Neon/Supabase free Postgres | all services |
+| `REDIS_URL` | Upstash free Redis | transaction-service |
+| `COLLEGE_EMAIL_DOMAINS` | not a secret — just your college's domain(s) | identity-service |
+
+Give Codex the values as environment variables/secrets at deploy time — never paste them into the prompts themselves.
+
+
+``` Go through the tasks informed in this text and only perform those tasks. U must strictly adhere to what my orders are. if found to do any other task apart from what is being asked in my text. it will be considered a s a violation. this is phase 6 of the build and i want a professional build sticking to only the stuff being asked to implement on the existing stuff from earlier phases
+and keep the time in mind.its an easy task just wrap it up within 30 mins

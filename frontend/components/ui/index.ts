@@ -1,0 +1,15 @@
+export { GeometricDecoration, GeometricComposition } from "@/components/ui/geometric-decoration";
+export type { GeometricDecorationProps, DecorationShape, DecorationColor } from "@/components/ui/geometric-decoration";
+export { HostelMotif, MotifScatter } from "@/components/ui/hostel-motif";
+export type { HostelMotifProps, MotifScatterProps, MotifVariant, MotifTone, MotifIcon } from "@/components/ui/hostel-motif";
+export { Button, buttonVariants } from "@/components/ui/button";
+export type { ButtonProps } from "@/components/ui/button";
+export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+export { Badge, VerifiedResidentBadge } from "@/components/ui/badge";
+export { ToastProvider, useToast } from "@/components/ui/toast";
+export type { ToastInput, ToastTone } from "@/components/ui/toast";
+export { Input, Textarea, Select, Checkbox } from "@/components/ui/input";
+export { Modal } from "@/components/ui/modal";
+export { Stepper } from "@/components/ui/stepper";
+export type { Step, StepState } from "@/components/ui/stepper";
+export { Skeleton, EmptyState, Tabs, Section } from "@/components/ui/skeleton";

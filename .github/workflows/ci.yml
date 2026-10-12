@@ -1,0 +1,200 @@
+name: CI
+
+# Phase 10 — faithful to the scripts that already exist in each package.json.
+#
+# Design notes (keep honest when editing):
+# - `npm test` per app is EXACTLY the package.json script — no flags added.
+#   Four suites (gateway, identity, marketplace, transaction) are red when run
+#   standalone because their tests require the live-server environment that
+#   only `scripts/test-integration.sh` sets up (env-guard beforeAll throws, or
+#   tests hit a live TEST_BASE_URL). Those steps are continue-on-error and are
+#   covered HARD by the `integration` matrix, which runs the same suites green.
+# - `integration` mounts ./infra/init-db into the Postgres service container so
+#   the compose-identical schemas + per-service roles (identity_app etc. with
+#   the *_dev_pw passwords the scripts default to) exist before the suites run.
+# - `docker-build` is a canary for the deps-stage fix: the runner images must
+#   keep typescript installed through `next build` (tsconfig paths → webpack
+#   aliases). gateway was the original failure; identity carries the extra
+#   argon2 musl build. The other four service Dockerfiles share the pattern.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Unit-level: npm ci + tsc --noEmit + npm test, per app (exact scripts).
+  # ---------------------------------------------------------------------------
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gateway, path: gateway, standalone-red: true }
+          - { name: identity-service, path: services/identity-service, standalone-red: true }
+          - { name: marketplace-service, path: services/marketplace-service, standalone-red: true }
+          - { name: communication-service, path: services/communication-service, standalone-red: false }
+          - { name: ai-service, path: services/ai-service, standalone-red: false }
+          - { name: transaction-service, path: services/transaction-service, standalone-red: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: "**/package-lock.json"
+
+      - name: Install
+        working-directory: ${{ matrix.path }}
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: ${{ matrix.path }}
+        run: npx tsc --noEmit
+
+      - name: Test (npm test)
+        working-directory: ${{ matrix.path }}
+        # gateway/identity/marketplace/transaction need the live-server env that
+        # scripts/test-integration.sh provides; standalone red is expected and
+        # covered hard by the integration job. communication + ai must be green.
+        continue-on-error: ${{ matrix.standalone-red }}
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # 2. Integration: scripts/test-integration.sh per app against real Postgres
+  #    (with infra/init-db applied) + Redis, exactly like the local compose run.
+  # ---------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: identity-service, path: services/identity-service }
+          - { name: marketplace-service, path: services/marketplace-service }
+          - { name: communication-service, path: services/communication-service }
+          - { name: transaction-service, path: services/transaction-service }
+          - { name: ai-service, path: services/ai-service }
+          - { name: gateway, path: gateway }
+    env:
+      # Passwords infra/init-db/002-roles.sh requires (matches the *_dev_pw
+      # defaults baked into every scripts/test-integration.sh).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hostel_marketplace
+      IDENTITY_DB_PASSWORD: id_dev_pw
+      MARKETPLACE_DB_PASSWORD: mkt_dev_pw
+      COMMUNICATION_DB_PASSWORD: com_dev_pw
+      TRANSACTION_DB_PASSWORD: txn_dev_pw
+      AI_DB_PASSWORD: ai_dev_pw
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hostel_marketplace
+        ports:
+          - 15432:5432
+        volumes:
+          - ${{ github.workspace }}/infra/init-db:/docker-entrypoint-initdb.d
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hostel_marketplace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: "**/package-lock.json"
+
+      - name: Wait for init-db roles (schemas + per-service roles)
+        run: |
+          for i in $(seq 1 60); do
+            if docker exec "${{ job.services.postgres.id }}" psql -U postgres -d hostel_marketplace -tAc \
+              "SELECT 1 FROM pg_roles WHERE rolname = 'identity_app'" | grep -q 1; then
+              echo "init-db applied: schemas + roles ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::infra/init-db did not create the service roles"
+          docker logs "${{ job.services.postgres.id }}" | tail -50
+          exit 1
+
+      - name: Install
+        working-directory: ${{ matrix.path }}
+        run: npm ci --no-audit --no-fund
+
+      - name: Integration tests (npm run test:integration)
+        working-directory: ${{ matrix.path }}
+        run: npm run test:integration
+
+  # ---------------------------------------------------------------------------
+  # 3. Frontend: no test script exists — build + typecheck are the proof.
+  # ---------------------------------------------------------------------------
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 4. Docker build canaries (deps-stage must keep typescript for next build).
+  # ---------------------------------------------------------------------------
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gateway, dir: gateway }
+          - { name: identity-service, dir: services/identity-service }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t hostel-marketplace-${{ matrix.name }}:ci ${{ matrix.dir }}

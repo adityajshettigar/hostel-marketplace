@@ -1,0 +1,37 @@
+{
+  "name": "identity-service",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 4001",
+    "build": "next build",
+    "start": "next start -p 4001",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "bash scripts/test-integration.sh"
+  },
+  "dependencies": {
+    "@types/pg": "^8.23.1",
+    "@types/uuid": "^9.0.8",
+    "argon2": "^0.43.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.3",
+    "jwks-rsa": "^3.2.2",
+    "next": "^14.2.25",
+    "pg": "^8.23.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "redis": "^4.7.1",
+    "ts-node": "^10.9.2",
+    "uuid": "^9.0.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.4",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

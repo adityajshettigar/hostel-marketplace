@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Bauhaus core palette — the ONLY colors in the system */
+  --background: #f0f0f0;
+  --foreground: #121212;
+  --border: #121212;
+  --muted: #e0e0e0;
+
+  --primary-red: #d02020;
+  --primary-blue: #1040c0;
+  --primary-yellow: #f0c020;
+
+  /* Derived surfaces — allowed ONLY as tints of the above */
+  --accent-yellow-soft: #fff9c4;
+  --surface: #ffffff;
+
+  /* Hard shadow offsets — never blurred */
+  --shadow-sm: 3px 3px 0px 0px var(--border);
+  --shadow-md: 4px 4px 0px 0px var(--border);
+  --shadow-lg: 6px 6px 0px 0px var(--border);
+  --shadow-xl: 8px 8px 0px 0px var(--border);
+
+  /* Geometry */
+  --radius-square: 0px;
+  --radius-circle: 9999px;
+  --border-w: 2px;
+  --border-w-lg: 4px;
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --border-w: 4px;
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-outfit), system-ui, sans-serif;
+    font-weight: 500;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--primary-yellow);
+    color: var(--foreground);
+  }
+  :focus-visible {
+    outline: 3px solid var(--primary-blue);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+    *,
+    *::before,
+    *::after {
+      transform: none !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Dot-grid texture — used on colored bands, never animated */
+  .bg-dot-grid {
+    background-image: radial-gradient(#ffffff 2px, transparent 2px);
+    background-size: 20px 20px;
+  }
+  .bg-dot-grid-dark {
+    background-image: radial-gradient(#121212 2px, transparent 2px);
+    background-size: 20px 20px;
+  }
+  /* Hard press effect used by every interactive surface */
+  .press {
+    @apply active:translate-x-[2px] active:translate-y-[2px] active:shadow-none;
+  }
+  /* Grid-paper backdrop for hero/section fills */
+  .bg-bauhaus-grid {
+    background-image: linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.06;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  /* Geometric triangle primitive */
+  .shape-triangle {
+    clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+  }
+}

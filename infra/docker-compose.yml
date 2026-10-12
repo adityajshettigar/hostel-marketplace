@@ -1,0 +1,158 @@
+# hostel-marketplace — Phase 1 infrastructure
+#
+# Service ports (host : container):
+#   frontend 3000 | gateway 4000 | identity 4001 | marketplace 4002
+#   communication 4003 | transaction 4004 | ai 4005 | postgres 5432 | redis 6379
+#
+# The whole system is driven by ONE root .env:
+#   cp .env.example .env      # fill in values (no defaults are provided here)
+#   docker compose -f infra/docker-compose.yml --env-file .env up --build
+#
+# All services consume the SAME root .env through env_file, so passwords,
+# DATABASE_URLs and service URLs are defined exactly once.
+
+name: hostel-marketplace
+
+services:
+  # ── Infrastructure ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    ports:
+      - "15432:5432" # host 15432: host-native PG occupies 5432 (audit Step 1b)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "16379:6379" # host 16379: host-native Redis occupies 6379 (audit Step 1b)
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── The 7 Next.js apps (one own Dockerfile each, own port) ─────────────
+  identity-service:
+    build:
+      context: ../services/identity-service
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  marketplace-service:
+    build:
+      context: ../services/marketplace-service
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4002:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  communication-service:
+    build:
+      context: ../services/communication-service
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4003:4003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  transaction-service:
+    build:
+      context: ../services/transaction-service
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4004:4004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ai-service:
+    build:
+      context: ../services/ai-service
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4005:4005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Same-origin /gw proxy target inside the compose network.
+        GATEWAY_ORIGIN: http://gateway:4000
+        # Browser-side Cloudinary upload config — inlined into the client
+        # bundle at build time (lib/cloudinary.ts reads NEXT_PUBLIC_*).
+        NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: ${NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME:-}
+        NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET: ${NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET:-}
+    env_file:
+      - ../.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+# ── Volumes ─────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
