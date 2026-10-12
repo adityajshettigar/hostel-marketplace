@@ -1,366 +1,384 @@
-# Smart Hostel Marketplace
+<h1 align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Outfit&weight=700&size=36&duration=2500&pause=900&color=D02020&center=true&vCenter=true&width=800&lines=Smart+Hostel+Marketplace;Campus+Commerce%2C+Connected;Buy+%E2%80%A2+Sell+%E2%80%A2+Trade" alt="Smart Hostel Marketplace" />
+</h1>
 
-**One-paragraph description (SRS abstract object):** The Smart Hostel
-Marketplace is a campus-only, rule-abiding digital marketplace where hostel
-students buy, sell and negotiate within their own hostel block (MH/LH), so that
-peers never leave their rooms to trade. Students verify their real hostel
-identity (reg no, phone number, block, room) with two-factor authentication,
-list SFW items with hover previews of price/quantity, then chat, offer and
-complete handoffs through an escrow simulation with a 48h review window, PIN/QR,
-disputes and AI-assisted pricing. All five services run as independent
-Next.js 14 microservices sharing one Postgres instance (one schema per service)
-and one Redis cache.
+[![Next.js](https://img.shields.io/badge/Next.js-App%20Router-black?logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-typed%20JavaScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 
-> **Phase 2 status: identity-service implemented** (register → verify → login →
-> session/refresh → admin roles → profiles → JWKS, all verified with a clean production
-> build + typecheck). All other apps remain **Phase 1 scaffolding only**.
-> This README and the `docs/` folder are the home for the full SRS (drop it
-> here later); the paragraph above follows the playbook supplied with the task.
+A campus-focused marketplace for hostel residents to list items, discover products, negotiate offers, communicate, and coordinate handovers. The application is organized as independently built Next.js services, connected through an API gateway and backed by PostgreSQL and Redis.
 
----
+> **Demo and payment notice**
+>
+> This repository is intended for development, learning, and controlled demonstrations. The transaction workflow includes escrow-style states and handover controls, but this is **not a production-cleared escrow or payments system**. Razorpay integration must remain in **test mode** until the integration, security boundaries, refund behaviour, and operational controls have been independently verified. Do not use real funds or sensitive production data.
 
-## Folder structure
+**Repository:** <https://github.com/adityajshettigar/hostel-marketplace>
 
+## Contents
+
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Services and local ports](#services-and-local-ports)
+- [Technology stack](#technology-stack)
+- [Prerequisites](#prerequisites)
+- [Local setup](#local-setup)
+- [Environment configuration](#environment-configuration)
+- [Database initialization](#database-initialization)
+- [Run and verify](#run-and-verify)
+- [Development workflow](#development-workflow)
+- [Testing](#testing)
+- [Deployment guidance](#deployment-guidance)
+- [Security and known limitations](#security-and-known-limitations)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
+## Highlights
+
+- **Listings and offers:** create and manage listings, browse/filter inventory, and negotiate offers.
+- **Hostel-aware identity:** user profiles include hostel context; public-profile responses are designed to avoid exposing private contact and payment details.
+- **Authentication:** password hashing, signed access tokens, refresh-token rotation, role-aware administration, and a JWKS endpoint for token verification.
+- **Communication:** conversations, messages, notifications, and checks intended to reduce sharing of off-platform contact/payment information.
+- **AI-assisted listing tools:** title/category/description assistance, pricing ranges, and recommendations. Suggestions are assistive and should be reviewed by the user; fallback behaviour is available when the optional inference API is not configured.
+- **Transaction workflow:** transaction status tracking, handover PIN/QR handling, dispute records, audit events, and payout retry logic.
+- **Service-oriented development:** each API service has its own package manifest, Dockerfile, routes, and tests.
+- **Containerized local environment:** Docker Compose starts the frontend, gateway, five backend services, PostgreSQL, and Redis.
+
+## Architecture
+
+The browser communicates with the frontend. The frontend routes API requests through the gateway, which forwards requests to the appropriate internal service. The services use one PostgreSQL instance with a separate schema and application role for each service, plus Redis for rate limiting and transaction jobs.
+
+```mermaid
+flowchart TD
+    Browser[Browser] --> Frontend[Next.js frontend :3000]
+    Frontend -->|/gw/* rewrite| Gateway[API gateway :4000]
+    Gateway --> Identity[Identity service :4001]
+    Gateway --> Marketplace[Marketplace service :4002]
+    Gateway --> Communication[Communication service :4003]
+    Gateway --> Transaction[Transaction service :4004]
+    Gateway --> AI[AI service :4005]
+    Identity --> DB[(PostgreSQL 16\nidentity schema)]
+    Marketplace --> DB2[(PostgreSQL 16\nmarketplace schema)]
+    Communication --> DB3[(PostgreSQL 16\ncommunication schema)]
+    Transaction --> DB4[(PostgreSQL 16\ntransaction schema)]
+    AI --> DB5[(PostgreSQL 16\nai schema)]
+    Identity --> Redis[(Redis 7)]
+    Transaction --> Redis
 ```
-hostel-marketplace/
-├── frontend/                  Next.js 14 (App Router + TS) - student-facing UI
-├── gateway/                   Thin reverse-proxy (stub in Phase 1)
-└── services/
-    ├── identity-service/      Auth, users, hostel identity
-    ├── marketplace-service/   Listings, search, offers/negotiation
-    ├── communication-service/ Chat, chat-safety, notifications
-    ├── transaction-service/   Transactions, escrow, PIN/QR, disputes
-    └── ai-service/            Pricing AI, categorisation, recommendations, risk
-├── infra/
-│   ├── docker-compose.yml     Single-command full-stack (Postgres + Redis + 7 apps)
-│   └── init-db/               Schemas + least-privilege DB roles (run once on first boot)
-└── docs/                      SRS, spec iterations, decisions log
-```
 
-Each folder under `services/`, `frontend/` and `gateway/` is a **standalone**
-Next.js 14 (App Router, TypeScript) project: own `package.json`, `tsconfig.json`,
-its own `Dockerfile` (multi-stage, `node:20-alpine`, production build). No pages
-in the services or gateway — they expose only `app/api/` route handlers, so all
-inter-service calls are plain REST over the Docker network in prod.
+### Request path
 
-## Quick start — run the whole system
+1. The browser loads the frontend on port `3000`.
+2. Frontend API requests use the `/gw/*` rewrite and reach the gateway on port `4000`.
+3. The gateway routes the request to the relevant service and adds the configured internal service key.
+4. Services validate requests, apply their authorization rules, and access their own database schema.
+
+The gateway and each service expose health endpoints. Most application routes are authenticated; health and explicitly public identity endpoints are exceptions. In the current configuration, listing browsing through the gateway also requires authentication.
+
+## Services and local ports
+
+| Component | Local port | Responsibility | Database/cache |
+|---|---:|---|---|
+| Frontend | `3000` | Marketplace UI, login/register, listings, dashboard, purchases, transactions, admin screens | Calls gateway |
+| API gateway | `4000` | API routing, JWT checks, internal service-key forwarding, rate limiting, health aggregation | Redis-backed behaviour may be used by downstream services |
+| Identity service | `4001` | Registration/login, sessions and refresh, profiles, roles, JWKS | PostgreSQL `identity`; Redis |
+| Marketplace service | `4002` | Listings, search, offers, listing status | PostgreSQL `marketplace` |
+| Communication service | `4003` | Conversations, messages, message safety checks, notifications, socket endpoint | PostgreSQL `communication` |
+| Transaction service | `4004` | Transactions, escrow-style state tracking, handover, disputes, payout/release jobs | PostgreSQL `transaction`; Redis/BullMQ |
+| AI service | `4005` | Listing suggestions, price ranges, recommendations | PostgreSQL `ai`; optional Hugging Face API |
+| PostgreSQL | `15432` on host | Relational persistence | Named Docker volume |
+| Redis | `16379` on host | Cache, rate-limit and background-job support | Named Docker volume |
+
+The PostgreSQL and Redis host ports above are chosen for this Compose setup; containers use `postgres:5432` and `redis:6379` on the internal Docker network. Published ports are for local development only. Do not expose all service or database ports directly to the public internet.
+
+## Technology stack
+
+- **Frontend and API services:** Next.js App Router, TypeScript, Node.js
+- **Validation and tests:** Zod, Vitest, service-level integration tests
+- **Persistence:** PostgreSQL 16, service-specific schemas and database roles
+- **Cache and jobs:** Redis 7, BullMQ for transaction jobs
+- **Infrastructure:** Docker, Docker Compose
+- **Supporting integrations:** Cloudinary for images, optional Hugging Face inference, Razorpay test-mode integration
+
+## Prerequisites
+
+For the complete containerized application, install:
+
+- Git
+- Docker Engine with the Docker Compose plugin (`docker compose`)
+- OpenSSL for generating local cryptographic material
+
+For running an individual app directly on your machine, also install Node.js 20 or the version supported by its `package.json`, plus npm.
+
+Check the tools before starting:
 
 ```bash
-# 1. Create your .env (from the values-free template) and fill it in:
+git --version
+docker --version
+docker compose version
+openssl version
+node --version   # needed for native development
+npm --version    # needed for native development
+```
+
+## Local setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/adityajshettigar/hostel-marketplace.git
+cd hostel-marketplace
+```
+
+### 2. Create the local environment file
+
+```bash
 cp .env.example .env
-
-# 2. Bring up Postgres, Redis and all 7 Next.js services:
-docker compose -f infra/docker-compose.yml --env-file .env up --build
+chmod 600 .env
 ```
 
-Open the service map:
+Edit `.env` locally and populate the variables required by the services. `.env` contains secrets and must not be committed. `.env.example` is the safe template; keep its secret values empty or use non-secret placeholders.
 
-| Service | Port | Docker network name |
-|---|---|---|
-| frontend | 3000 | `frontend` |
-| gateway | 4000 | `gateway` |
-| identity-service | 4001 | `identity-service` |
-| marketplace-service | 4002 | `marketplace-service` |
-| communication-service | 4003 | `communication-service` |
-| transaction-service | 4004 | `transaction-service` |
-| ai-service | 4005 | `ai-service` |
-| Postgres | 5432 | `postgres` |
-| Redis | 6379 | `redis` |
+### 3. Generate local cryptographic values
 
-Logs interleave; stop everything with `Ctrl+C`, then `docker compose down` (add
-`-v` only if you want to throw away the Postgres data volume).
-
-## Run just your own service (one teammate, one machine)
-
-Each teammate owns one service. Start the **shared** Postgres + Redis once, then
-develop in your own app with zero Docker built around you:
+Generate a new RSA key pair for the local environment and a random internal service key. Keep the private key and all generated secrets out of Git.
 
 ```bash
-# 1. Shared infra only (postgres + redis), from the repo root:
+mkdir -p "$HOME/.config/hostel-marketplace/keys"
+chmod 700 "$HOME/.config/hostel-marketplace/keys"
+
+openssl genpkey -algorithm RSA \
+  -pkeyopt rsa_keygen_bits:2048 \
+  -out "$HOME/.config/hostel-marketplace/keys/jwt-private.pem"
+
+openssl pkey \
+  -in "$HOME/.config/hostel-marketplace/keys/jwt-private.pem" \
+  -pubout \
+  -out "$HOME/.config/hostel-marketplace/keys/jwt-public.pem"
+
+openssl rand -hex 32
+openssl rand -base64 32
+```
+
+Use the first random output as the shared internal service key and the Base64 output as `QR_ENCRYPTION_KEY`. Put the complete private/public PEM contents into the corresponding values in `.env`, preserving the `BEGIN`/`END` lines and newlines in the format accepted by Docker Compose. `JWT_ISSUER` and `JWT_AUDIENCE` must match across services. The identity service is the token signer; production deployments should not give its private signing key to services that only need the public key.
+
+Set `INTERNAL_SERVICE_KEY` and `INTERNAL_SERVICE_API_KEY` to **the exact same random value**. If these values differ, gateway-routed calls to downstream services may fail with `403` responses.
+
+Use unique, strong values for `POSTGRES_PASSWORD` and each service-specific database password. Avoid reusing passwords between applications.
+
+### 4. Configure optional integrations
+
+| Integration | Configuration | Notes |
+|---|---|---|
+| Image uploads | `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET` | The current frontend upload flow uses a Cloudinary upload preset. Never expose `CLOUDINARY_API_SECRET` as a `NEXT_PUBLIC_*` variable. |
+| Razorpay | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `NEXT_PUBLIC_RAZORPAY_KEY_ID` | Test-mode keys only. The frontend key ID must match the server-side key ID. Live payment use is not supported by this setup. |
+| Handover QR encryption | `QR_ENCRYPTION_KEY` | Generate a fresh 32-byte Base64 value for each environment. |
+| AI captioning | `HF_API_TOKEN`, optional `HF_CAPTION_MODEL` and `HF_API_URL` | Optional; the AI service should use its documented fallback when no token is configured or inference fails. |
+| College domain allow-list | `COLLEGE_EMAIL_DOMAINS` | Comma-separated allowed domains, for example `vitapstudent.ac.in`. Domain allow-listing alone is not proof of verified student identity. |
+
+For the authoritative list of environment variables and their defaults, use the root `.env.example` and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Do not paste secrets into issues, commits, screenshots, or chat messages.
+
+## Database initialization
+
+The Compose initialization scripts create the five schemas, service roles, and grants when the PostgreSQL data volume is first initialized. They **do not create each service's application tables**. Each service schema must also be applied before exercising database-backed routes.
+
+### 1. Start PostgreSQL and Redis
+
+```bash
 docker compose -f infra/docker-compose.yml --env-file .env up -d postgres redis
-
-# 2. In YOUR service folder:
-cd services/identity-service
-cp ../../.env.example .env           # fill in YOUR variables (read below)
-npm install                          # or: npm run dev (installs everything inside Docker)
-npm run dev
 ```
 
-Dev server: `http://localhost:4001` (`npm run dev` already pins the right port).
-Point at the **shared** Postgres/Redis by pointing `IDENTITY_DATABASE_URL` /
-`REDIS_URL` at `localhost:15432` / `localhost:16379` (host port mapping in
-`infra/docker-compose.yml`), e.g.:
-
-```
-IDENTITY_DATABASE_URL=postgresql://identity_app:<password>@localhost:15432/hostel_marketplace
-REDIS_URL=redis://localhost:16379
-```
-
-`IDENTITY_APP_PASSWORD` and the other role passwords live in your **root**
-`.env` (mounted into the Docker network containers via `env_file`), while the
-service-local copy keeps its own `DATABASE_URL` etc. for native dev — there is
-no cross-pollution between Docker and your laptop.
-
-> The `IDENTITY_*` env names below match the `identity_app` role the
-> `infra/init-db/` scripts create on first boot.
-
-## Database bootstrap (one-time, on first boot)
-
-`infra/init-db/` runs automatically, alphabetically, when the Postgres volume is
-empty for the first time. Schemas are created first, then least-privilege roles,
-then schema-level grants, so each service's DB user can only touch its own
-schema. Re-run from scratch with `docker compose down -v` (wipes the dev DB).
-
-- `infra/init-db/001-schemas.sql` — 5 schemas
-- `infra/init-db/002-roles.sh` — roles with passwords from **env** (SQL can't
-  read environment, hence the script) + schema ownership
-- `infra/init-db/003-grants.sql` — least-privilege grants (same-current-user default
-  privileges, `search_path` scoped per role)
-
-## Phase 2 — identity-service (implemented)
-
-Full auth microservice on Next.js 14 App Router. Handlers live in
-`services/identity-service/src/routes/*.ts`; the files under
-`src/app/api/**/route.ts` are thin re-exports.
-
-### Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/health` | Liveness for Docker HEALTHCHECK / gateway |
-| POST | `/api/auth/register` | College-email signup, argon2id hash — no email verification step |
-| POST | `/api/auth/login` | Session + JWT (plain email + password, no 2FA step) |
-| POST | `/api/auth/refresh` | Rotates refresh token (httpOnly cookie), new access token |
-| POST | `/api/auth/logout` | Revokes session, clears cookie |
-| GET / PATCH | `/api/users/me` | Own profile (JWT Bearer) |
-| GET | `/api/users/[id]/public` | Least-privilege public profile (no email/UPI) |
-| GET | `/api/users` | Admin userbase: accounts that logged in + their role |
-| PATCH | `/api/users/[id]/role` | Admin role toggle (user ↔ admin, admin-gated) |
-| GET | `/.well-known/jwks.json` | JWKS for other services to verify our tokens |
-
-### Extra env vars (root `.env`)
-
-```
-IDENTITY_DATABASE_URL=postgresql://identity_app:<pw>@localhost:15432/hostel_marketplace
-REDIS_URL=redis://localhost:16379
-JWT_PRIVATE_KEY="<PEM contents, BEGIN/END lines included>"
-JWT_PUBLIC_KEY="<PEM contents>"
-JWT_ISSUER=identity-service
-JWT_AUDIENCE=hostel-marketplace
-COLLEGE_EMAIL_DOMAINS=college.edu,students.example.edu
-```
-
-Generate the JWT key pair once with:
+Wait until both containers report healthy:
 
 ```bash
-openssl genpkey -algorithm RSA -out jwt_private.pem 2048
-openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem
+docker compose -f infra/docker-compose.yml --env-file .env ps
 ```
 
-### Verify it locally
+### 2. Apply the service table schemas
+
+Run from the repository root after the database roles and schemas exist:
 
 ```bash
-cd services/identity-service
-npm install
-npx next build        # ✓ Compiled successfully — 13 routes
-npm run typecheck     # ✓ tsc --noEmit clean
-npm run dev           # http://localhost:4001/api/health
+set -eu
+for pair in \
+  "identity:identity_app" \
+  "marketplace:marketplace_app" \
+  "communication:communication_app" \
+  "transaction:transaction_app" \
+  "ai:ai_app"
+do
+  schema="${pair%%:*}"
+  role="${pair##*:}"
+  printf 'Applying %s schema as %s\n' "$schema" "$role"
+  docker compose -f infra/docker-compose.yml --env-file .env \
+    exec -T postgres \
+    psql -U "$role" -d hostel_marketplace -v ON_ERROR_STOP=1 \
+    < "services/${schema}-service/db/schema.sql"
+done
 ```
 
-Register → log in. Registration is plain email+password (no verification
-email) and login issues the token pair directly (no 2FA/OTP step).
+If these scripts have already been applied, inspect the database before rerunning them. Do not remove the database volume as a troubleshooting shortcut: `docker compose down -v` permanently deletes the local PostgreSQL and Redis data volumes.
 
-### Known limitations (next phase)
+### 3. Build and start the application
 
-- Admin authorization is admin-side: roles live in `users.role` and are
-  toggled from the admin console's **userbase** page.
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+```
 
-## Verified on the plan
+The first build can take a while. Review service status and logs if a container does not become healthy.
 
-| Requirement | Phase 1 |
+## Run and verify
+
+### Check container status
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env ps
+```
+
+### Check health endpoints
+
+```bash
+for port in 4000 4001 4002 4003 4004 4005; do
+  printf 'Port %s: ' "$port"
+  curl --silent --show-error --output /dev/null \
+    --write-out '%{http_code}\n' "http://127.0.0.1:${port}/api/health" || true
+done
+```
+
+Open the application at **<http://localhost:3000>**. The gateway health endpoint is **<http://localhost:4000/api/health>**.
+
+### Follow logs
+
+```bash
+# All services
+docker compose -f infra/docker-compose.yml --env-file .env logs -f
+
+# A single service
+docker compose -f infra/docker-compose.yml --env-file .env logs -f marketplace-service
+```
+
+Press `Ctrl+C` to stop following logs; this does not stop the containers.
+
+### Stop the application
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env down
+```
+
+This stops and removes containers but preserves named volumes. Use `down -v` only when you intentionally want to delete the local persisted data and understand the consequences.
+
+## Development workflow
+
+Each application is an independent Node/Next.js project with its own `package.json`, lockfile, Dockerfile, and tests. You can work on one service while PostgreSQL and Redis remain in Docker.
+
+<details>
+<summary><strong>Run a service natively</strong></summary>
+
+1. Start the shared infrastructure from the repository root:
+
+   ```bash
+   docker compose -f infra/docker-compose.yml --env-file .env up -d postgres redis
+   ```
+
+2. Change to a service directory and install its dependencies. For example, for identity-service:
+
+   ```bash
+   cd services/identity-service
+   npm ci
+   npm run dev
+   ```
+
+3. Configure that service's local environment to use the host-mapped database and Redis ports. From a process running directly on the host, use `localhost:15432` for PostgreSQL and `localhost:16379` for Redis. Containers instead use `postgres:5432` and `redis:6379`.
+
+4. Check the scripts in that service's `package.json` for its available test, lint, type-check, and build commands. Do not assume that all services expose identical scripts.
+
+</details>
+
+<details>
+<summary><strong>Useful commands</strong></summary>
+
+```bash
+# Validate Compose configuration
+docker compose -f infra/docker-compose.yml --env-file .env config --quiet
+
+# Rebuild one service and its dependencies if required
+docker compose -f infra/docker-compose.yml --env-file .env up -d --build marketplace-service
+
+# Restart one service
+docker compose -f infra/docker-compose.yml --env-file .env restart marketplace-service
+
+# Check gateway logs
+docker compose -f infra/docker-compose.yml --env-file .env logs --tail=200 gateway
+```
+
+</details>
+
+## Testing
+
+Each service contains its own tests. Run them from the service directory and use the scripts declared in that service's `package.json`.
+
+The repository also includes a stack-level smoke test:
+
+```bash
+bash scripts/smoke-test.sh
+```
+
+**Run the smoke test only against a disposable development/test environment.** It creates users and exercises state-changing listing and transaction paths. Do not point it at production or a shared database with valuable data. Some end-to-end payment and payout assertions require valid Razorpay test-mode credentials and may remain blocked when those external credentials are unavailable; a passing mock-based test does not prove that the live provider integration works.
+
+## Deployment guidance
+
+The Compose setup is intended for local development and controlled demonstrations. For a hosted deployment, follow [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) and configure each service with its own environment and database permissions.
+
+Before making the app public:
+
+1. Put a TLS-terminating reverse proxy or managed edge in front of the application.
+2. Expose only the intended public ingress. Do not publish PostgreSQL, Redis, or every microservice port directly to the internet.
+3. Inject secrets through the hosting provider's secret manager, and give each service only the secrets it needs.
+4. Use a dedicated production database and Redis instance, with backups and a migration/restore plan.
+5. Resolve the security and transaction limitations listed below, run the tests against isolated test data, and verify the deployed application end to end.
+6. Keep Razorpay in test mode until payment, refund, webhook, and payout behaviour has been independently reviewed and verified.
+
+“Free tier” availability, resource limits, sleep policies, and pricing vary by provider and can change. Confirm current limits with each provider before relying on a zero-cost deployment.
+
+## Security and known limitations
+
+This repository is under active development. The following limitations are important and should be addressed before a public beta or real-money use:
+
+- **Not production-cleared for payments.** The escrow-style workflow is a demonstration, not legally or operationally verified escrow. Razorpay sandbox order creation, webhooks, refunds, and payouts must be tested with valid test credentials; successful unit tests do not establish that the external integration is working.
+- **Refund provider integration is incomplete.** A refund-like application state must not be interpreted as proof that Razorpay has returned funds. Verify the provider refund API call and provider-confirmed result before describing a refund as completed.
+- **Inventory concurrency needs hardening.** Offer acceptance must reserve stock atomically in the database and be tested under concurrent requests. Without this invariant, multiple buyers may be accepted for the same stock.
+- **Network exposure must be restricted.** The local Compose file publishes application and data ports on host interfaces. For hosting, expose the frontend/edge ingress only and keep backend services, PostgreSQL, and Redis private. Apply firewall/network policies as appropriate.
+- **Webhook routing needs deliberate configuration.** Razorpay must reach the transaction service's `/api/webhooks/razorpay` endpoint over HTTPS. The current gateway configuration does not proxy that path. Do not solve this by publicly exposing every service port; configure a narrowly scoped, signature-verified reverse-proxy route before relying on remote webhooks.
+- **Authentication UX has a known limitation.** The current frontend holds tokens in memory rather than persistent browser storage, so a page reload or newly opened tab may require the user to log in again. Review the refresh-token cookie path and refresh flow before changing this behaviour.
+- **Email verification and two-factor authentication are not currently wired into the live signup/login flow.** Do not describe an account as email-verified or protected by new-IP 2FA unless that behaviour has been implemented and tested in the deployed version.
+- **Credential hygiene matters.** If a secret has ever been committed, removing the file from the latest snapshot is not enough. Rotate the exposed credential, ensure no secret-bearing history is published, and use a dedicated secret store for hosted deployments.
+- **Review dependencies before release.** Re-run the dependency audit and address current advisories for the exact lockfiles and versions being deployed. Audit results become stale when dependencies change.
+
+Security issues should be reported privately to the repository maintainer. Do not open a public issue containing credentials, personal data, exploitable details, or payment information.
+
+## Troubleshooting
+
+| Symptom | Checks |
 |---|---|
-| Monorepo named `hostel-marketplace`, exact structure | ✅ |
-| Standalone Next.js 14 (App Router, TS) per app, own package.json/tsconfig/Dockerfile | ✅ |
-| API-route-only services + gateway (no pages) | ✅ |
-| PostgreSQL 16 + Redis 7, healthchecks, `depends_on: service_healthy` | ✅ |
-| Root `.env` shared via `env_file` on every service | ✅ |
-| Postgres roles with least-privilege per schema | ✅ |
-| Scaffolding **only** — no business logic | ✅ |
+| A container exits or is unhealthy | Inspect `docker compose ... ps` and `docker compose ... logs <service>`. Check missing required variables in `.env`. |
+| Gateway requests return `403` | Confirm `INTERNAL_SERVICE_KEY` and every service's `INTERNAL_SERVICE_API_KEY` match exactly, and check authentication/routing logs. |
+| JWT validation fails | Confirm the RSA public key matches the identity service's private signing key; compare issuer and audience settings across services. Do not print key material into logs or chat. |
+| Database connection fails | Use `postgres:5432` from containers and `localhost:15432` from the host; verify the relevant role, password, schema, and database URL. |
+| Application route returns a database error | Confirm the service's `db/schema.sql` was applied to the correct service role/schema. The init scripts create roles/schemas/grants, not application tables. |
+| Listing images fail to upload | Check the public Cloudinary cloud name and upload preset, the built frontend's public environment values, and the actual sanitized browser network error. Never put the Cloudinary API secret in a browser variable. |
+| Razorpay integration reports not configured or unauthorized | Verify the test-mode key pair and webhook secret in the provider dashboard. Keep test and live keys separate; never use live keys to debug. |
+| A port is already in use | Identify the process/container using it before changing mappings. Do not stop unrelated services blindly. |
 
-### Next steps
+## Contributing
 
-- `gateway/` stub (no reverse-proxy logic yet) → proxy phase when routing begins
-- ✅ `identity-service` route tree + auth flows (Phase 2)
-- Remaining services' `app/api/` route trees as their feature phases land
-- `docs/` grows the SRS and an implementation/architecture log
+1. Create a branch for a focused change.
+2. Keep changes scoped to the affected service and its tests.
+3. Do not commit `.env`, private keys, tokens, logs, database dumps, or customer data.
+4. Add or update regression tests for changes to API contracts, authorization, transaction state, inventory, or security behaviour.
+5. Run the relevant service tests and review the final diff before opening a pull request.
+6. Document configuration changes in `.env.example` using empty values or safe placeholders only.
 
-## Known limitations (Phases 4–5 audit)
+## Licence
 
-- **Stale JWT claims until refresh (M2):** `PATCH /api/users/me` updates the database but an
-  already-issued access token keeps its old `hostelBlock` claim (marketplace block-wise search
-  reads the claim), so a profile change is reflected only after the next refresh/re-login —
-  self-healing because access tokens live 15 minutes; no structural fix is scheduled yet.
-- **No SOLD data for price suggestions (M4):** no code path sets
-  `marketplace.listings.status='SOLD'` yet (accepting an offer flips the offer row only, the
-  listing stays ACTIVE), so ai-service `POST /api/suggest/price` returns its labeled
-  `FALLBACK_DEFAULT` band in real usage — **transaction-service (Phase 6)** closes this by
-  writing SOLD transitions when deals complete.
-
-### Phase 4–5 additions (root `.env`)
-
-Per-service `COMMUNICATION_DATABASE_URL` / `AI_DATABASE_URL` and the `*_SERVICE_URL` entries
-already existed in the Phase 1 `.env.example` template. Genuinely NEW variables added since
-the Phase 2 section was written:
-
-| Variable | Purpose | Service |
-|---|---|---|
-| `INTERNAL_SERVICE_API_KEY` | Shared service-to-service API key protecting internal-only routes (`POST /api/notifications`); sent as `x-internal-api-key`, never a user JWT | communication-service (Phase 4) |
-| `HF_API_TOKEN` | Hugging Face Inference API token for image captioning; leave empty to run the pure-template fallback (SRS 7.12) | ai-service (Phase 5) |
-| `HF_CAPTION_MODEL` | HF image-captioning model id (default `Salesforce/blip-image-captioning-base`) | ai-service (Phase 5) |
-| `HF_API_URL` | HF Inference API base URL (default `https://api-inference.huggingface.co/models`; overridable for tests) | ai-service (Phase 5) |
-| `SERVICE_*_URL` (5 vars) | Gateway-only upstream table (`SERVICE_IDENTITY_URL` … `SERVICE_AI_URL`, compose service names) | gateway (Phase 7) |
-| `INTERNAL_SERVICE_KEY` | Key the gateway injects as `x-service-key` on every forwarded request | gateway → all services (Phase 7 / audit Step 2) |
-| `QR_ENCRYPTION_KEY` | 32-byte base64 AES-256-GCM key for handover QR payloads | transaction-service (Phase 6) |
-| `DUAL_AUTH_THRESHOLD` | Paise amount above which dispute resolution needs a second admin | transaction-service (Phase 6) |
-| `ADMIN_USER_IDS` | legacy admin allowlist (roles are now DB-backed; see Known limitations below) | transaction (audit Q4) |
-
-## Known limitations / operational notes (pre-frontend audit)
-
-- **Admin roles are DB-backed (admin console).** identity-service has no
-  self-serve admin creation. The `users.role` column (`user` / `admin`) is the
-  single source of truth: identity stamps a **signed `role` claim** into every
-  access token it mints (login and refresh re-read the column), and
-  transaction-service's admin gate accepts the signed claim first, falling back
-  to the legacy `ADMIN_USER_IDS` env list only for tokens minted before the
-  claim existed. Roles are changed from the admin console's **userbase** page
-  (`PATCH /api/users/:id/role`, admin-gated, self-demotion blocked); a change
-  takes effect for a user at their next login or token refresh.
-- **N4 / two service-URL env families exist on purpose.**
-  Family A `IDENTITY_SERVICE_URL / MARKETPLACE_SERVICE_URL / COMMUNICATION_SERVICE_URL /
-  TRANSACTION_SERVICE_URL / AI_SERVICE_URL` (localhost-style, Phase 1 template) is read by
-  **identity, marketplace, communication, transaction and ai** for their outbound
-  peer calls. Family B `SERVICE_IDENTITY_URL / SERVICE_MARKETPLACE_URL /
-  SERVICE_COMMUNICATION_URL / SERVICE_TRANSACTION_URL / SERVICE_AI_URL`
-  (compose service names) is read **only by the gateway** as its upstream routing
-  table. Keep both in sync when ports change; consolidating them is a possible
-  future cleanup, deliberately not done in the hardening pass.
-- **N5 / Razorpay and Hugging Face are stubs-only.** `RAZORPAY_KEY_ID`,
-  `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` are empty in `.env`, so
-  `POST /api/transactions/:id/escrow/init` returns **503 RAZORPAY_NOT_CONFIGURED**
-  and the webhook fails closed (`400 INVALID_SIGNATURE`) — no real payment flow can
-  run until TEST-mode keys are pasted in. `HF_API_TOKEN` is likewise empty, so AI
-  captions use the labeled template fallback. Everything end-to-end has been proven
-  with local test doubles (see the Phase 6 suites); the live sandbox APIs remain an
-  **unverified integration point** by design (user decision Q7).
-- **N2 / services are gateway-only (audit Step 2).** Every service runs a shared
-  `src/middleware.ts` gate: direct-port traffic without `x-service-key: $INTERNAL_SERVICE_KEY`
-  (the value the gateway injects) is rejected with **403**. Exempt by design:
-  `/api` (info), `/api/health`, `/.well-known/*` (JWKS), `/api/webhooks/*`
-  (Razorpay HMAC-authenticated), `/api/internal/*` (internal-key routes), and
-  communication's `/api/socketio` socket attachment.
-- **N1 / SOLD write (audit Step 1).** On handover verification, transaction-service
-  marks the listing `SOLD` in marketplace **before** attempting the payout, using the
-  shared internal key (`PATCH /api/internal/listings/:id/status`). If that call fails,
-  settlement aborts with the transaction left at `HANDOVER_VERIFIED` and a clear
-  retryable error — a payout can never succeed while the listing is still ACTIVE.
-- **Dev-stack note (audit F1–F3).** There is no email sending in the stack at
-  all (Resend/verification/2FA were removed): registration and login are plain
-  email+password. identity's Docker image
-  carries argon2's musl prebuilds explicitly because Next's standalone tracer prunes
-  them (see `services/identity-service/Dockerfile`).
-
-### Closeout pass (pre-frontend, G1–G3)
-
-- **Deployment: webhook ingress is direct-to-service by design.** The gateway
-  deliberately has **no `/api/webhooks/*` mount** (verified: `POST
-  :4000/api/webhooks/razorpay` → 404). Razorpay webhooks originate from Razorpay's
-  servers, not from a logged-in user, so JWT-gated gateway proxying does not apply
-  to them. In every deployment, transaction-service's webhook route
-  (`POST /api/webhooks/razorpay`, port 4004 locally) **must be reachable directly
-  by Razorpay**, bypassing the gateway. The route authenticates itself via the
-  Razorpay HMAC signature and fails closed (`400 INVALID_SIGNATURE`) when
-  `RAZORPAY_WEBHOOK_SECRET` is unset or the signature does not verify. Configure
-  the webhook URL in the Razorpay dashboard to point at transaction-service's
-  public address, not the gateway's.
-- **Route visibility: browsing requires login (confirmed intentional, Q2).**
-  Through the gateway (`:4000`) — the only public ingress — every route requires a
-  valid access-token JWT **except**: identity auth routes (`register`, `login`,
-  `refresh`, `logout`),
-  gateway info routes (`GET /api`, `GET /api/health`), and each service's
-  `GET /api/health` + `GET /api` info. Identity's JWKS (`/.well-known/jwks.json`)
-  is public by design. Marketplace listing search/browse (`GET
-  /api/marketplace/listings`) is public **at the service layer** (no
-  `requireAuth`), but the gateway JWT-gates it — so a logged-out visitor cannot
-  browse today; making browse public later would mean a scoped gateway `authBypass`
-  for that one GET (deliberately not done). All other GETs require a JWT:
-  marketplace `listings/:id`, `offers`, `offers/:id`, `stats/sold`; communication
-  `conversations`, `conversations/:id`, `notifications`; transaction
-  `transactions`, `transactions/:id`; ai `recommendations`; identity `users/me`.
-  Direct service ports enforce the `x-service-key` gate (N2 above), so
-  service-layer routes are never anonymously reachable except the middleware
-  exemptions listed there.
-- **Fresh-volume bootstrap: apply the per-service schemas (closeout finding).**
-  `infra/init-db/` creates schemas, roles and grants only — **not tables**. After
-  a true `docker compose down -v`, each service's `db/schema.sql` must be applied
-  **as that service's DB role** (the role's `search_path` pins it to its own
-  schema; applying as `postgres` would land tables in `public`):
-  ```bash
-  for pair in "identity:identity_app" "marketplace:marketplace_app" \
-              "communication:communication_app" "transaction:transaction_app" "ai:ai_app"; do
-    docker compose --project-directory infra exec -T postgres \
-      psql -U "${pair##*:}" -d hostel_marketplace \
-      -v ON_ERROR_STOP=1 < "services/${pair%%:*}-service/db/schema.sql"
-  done
-  ```
-  (Automating this into the boot sequence is a possible future cleanup,
-  deliberately not done in this pass.)
-- **Internal key pairing (closeout finding).** `INTERNAL_SERVICE_KEY` (injected
-  by the gateway as `x-service-key`) and `INTERNAL_SERVICE_API_KEY` (the value
-  services compare against) must hold **the same plaintext value** — the N2
-  middleware SHA-256-hashes both sides before comparing, so a hash in one and
-  plaintext in the other will never match and **every gateway-routed request
-  403s**. Symptom seen in the closeout run: `403 {"error":"FORBIDDEN","message":
-  "Missing or invalid x-service-key header"}` on all gateway routes with
-  healthy containers.
-- **Auth session model: memory-only tokens — you are logged out on every page
-  refresh (known, accepted tradeoff, H5).** Identity-service returns the access
-  token (15 min) and refresh token in the login/refresh **JSON body**; the
-  frontend holds both in module-scope JavaScript memory (`lib/api/client.ts`)
-  and **never** in `localStorage`/`sessionStorage` (a hard build-brief rule:
-  web storage is readable by any script, so a single XSS payload would exfiltrate
-  the tokens) and never in a cookie it sets itself. The deliberate cost:
-  JavaScript memory dies with the page, so **every refresh or reopened tab
-  requires logging in again**. Within a live page session, a 401 triggers one
-  silent refresh-and-retry; after a reload there is nothing left to refresh
-  with. This is a documented engineering decision, not an oversight. One
-  clarification found during the closeout recon: identity's login route *does*
-  already set an httpOnly `refreshToken` cookie — but with `path=/api/auth/refresh`,
-  which never matches the browser's gateway path (`/api/identity/auth/refresh`),
-  so the cookie never flows; and the refresh route reads the token from the JSON
-  body only, never the cookie. Wiring silent re-login-after-reload up is therefore    a *small* backend change (gateway-compatible cookie path + cookie fallback in
-    the refresh route), deliberately **not** made in this pass (user decision Q4:
-    documentation-only); it is the natural next step if the logout-on-refresh UX
-    becomes unacceptable.
-
-## End-to-end smoke test (Phase 10)
-
-```bash
-bash scripts/smoke-test.sh          # needs the stack up; exits non-zero on any failure
-```
-
-Drives the real stack through the gateway (`:4000`) and frontend (`:3000`):
-asserts the login/register gate hides every protected route from a logged-out
-visitor, registers and logs in a seller/buyer/admin, uploads an image to
-Cloudinary and publishes a listing, runs the offer → accept → escrow → delivery
-→ **buyer receipt (No then Yes)** lifecycle, then checks the purchases history,
-the admin-only surfaces and third-party access denial.
-
-It prints `PASS`/`FAIL`/`BLOCKED` per assertion and summarises at the end. One
-assertion is reported `BLOCKED` by design: the live escrow capture and Razorpay
-payout need real test-mode credentials, so escrow funding and the PIN/QR
-handover are advanced with a controlled DB fixture and the payout is truthfully
-reported `PENDING` — the run never claims money moved.
-
-`docs/phase10-report.md` holds the full Phase 10 report (file inventory per
-module, Cloudinary root cause, test repairs, smoke-test results) and
-`docs/frontend-file-map.md` the per-module frontend map.
+See [`MIT LICENSE`](LICENSE) for licensing terms.
