@@ -24,6 +24,11 @@ services:
         value: hostel-marketplace
       - key: COLLEGE_EMAIL_DOMAINS
         value: vitapstudent.ac.in
+      - key: INTERNAL_SERVICE_API_KEY
+        fromService:
+          type: web
+          name: hm-gateway
+          envVarKey: INTERNAL_SERVICE_KEY
       - key: FRONTEND_ORIGIN
         value: http://localhost:3000
 
@@ -131,12 +136,6 @@ services:
           envVarKey: REDIS_URL
       - key: QR_ENCRYPTION_KEY
         sync: false
-      - key: RAZORPAY_KEY_ID
-        sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
-      - key: RAZORPAY_WEBHOOK_SECRET
-        sync: false
       - key: FRONTEND_ORIGIN
         value: http://localhost:3000
 
@@ -196,10 +195,7 @@ services:
       - key: SERVICE_AI_URL
         value: https://hm-ai.onrender.com
       - key: JWT_PUBLIC_KEY
-        fromService:
-          type: web
-          name: hm-identity
-          envVarKey: JWT_PUBLIC_KEY
+        sync: false
       - key: JWT_ISSUER
         value: identity-service
       - key: JWT_AUDIENCE
