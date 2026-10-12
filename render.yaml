@@ -1,0 +1,210 @@
+services:
+  - type: web
+    name: hm-identity
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/identity-service/Dockerfile
+    dockerContext: ./services/identity-service
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: IDENTITY_DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_PRIVATE_KEY
+        sync: false
+      - key: JWT_PUBLIC_KEY
+        sync: false
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: COLLEGE_EMAIL_DOMAINS
+        value: vitapstudent.ac.in
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+
+  - type: web
+    name: hm-marketplace
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/marketplace-service/Dockerfile
+    dockerContext: ./services/marketplace-service
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MARKETPLACE_DATABASE_URL
+        sync: false
+      - key: IDENTITY_SERVICE_URL
+        value: https://hm-identity.onrender.com
+      - key: JWT_PUBLIC_KEY
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: JWT_PUBLIC_KEY
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: INTERNAL_SERVICE_API_KEY
+        fromService:
+          type: web
+          name: hm-gateway
+          envVarKey: INTERNAL_SERVICE_KEY
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+
+  - type: web
+    name: hm-communication
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/communication-service/Dockerfile
+    dockerContext: ./services/communication-service
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: COMMUNICATION_DATABASE_URL
+        sync: false
+      - key: IDENTITY_SERVICE_URL
+        value: https://hm-identity.onrender.com
+      - key: MARKETPLACE_SERVICE_URL
+        value: https://hm-marketplace.onrender.com
+      - key: JWT_PUBLIC_KEY
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: JWT_PUBLIC_KEY
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: INTERNAL_SERVICE_API_KEY
+        fromService:
+          type: web
+          name: hm-gateway
+          envVarKey: INTERNAL_SERVICE_KEY
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+
+  - type: web
+    name: hm-transaction
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/transaction-service/Dockerfile
+    dockerContext: ./services/transaction-service
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRANSACTION_DATABASE_URL
+        sync: false
+      - key: IDENTITY_SERVICE_URL
+        value: https://hm-identity.onrender.com
+      - key: MARKETPLACE_SERVICE_URL
+        value: https://hm-marketplace.onrender.com
+      - key: JWT_PUBLIC_KEY
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: JWT_PUBLIC_KEY
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: INTERNAL_SERVICE_API_KEY
+        fromService:
+          type: web
+          name: hm-gateway
+          envVarKey: INTERNAL_SERVICE_KEY
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: REDIS_URL
+      - key: QR_ENCRYPTION_KEY
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+
+  - type: web
+    name: hm-ai
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/ai-service/Dockerfile
+    dockerContext: ./services/ai-service
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AI_DATABASE_URL
+        sync: false
+      - key: IDENTITY_SERVICE_URL
+        value: https://hm-identity.onrender.com
+      - key: MARKETPLACE_SERVICE_URL
+        value: https://hm-marketplace.onrender.com
+      - key: JWT_PUBLIC_KEY
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: JWT_PUBLIC_KEY
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: INTERNAL_SERVICE_API_KEY
+        fromService:
+          type: web
+          name: hm-gateway
+          envVarKey: INTERNAL_SERVICE_KEY
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+
+  - type: web
+    name: hm-gateway
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./gateway/Dockerfile
+    dockerContext: ./gateway
+    healthCheckPath: /api
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SERVICE_IDENTITY_URL
+        value: https://hm-identity.onrender.com
+      - key: SERVICE_MARKETPLACE_URL
+        value: https://hm-marketplace.onrender.com
+      - key: SERVICE_COMMUNICATION_URL
+        value: https://hm-communication.onrender.com
+      - key: SERVICE_TRANSACTION_URL
+        value: https://hm-transaction.onrender.com
+      - key: SERVICE_AI_URL
+        value: https://hm-ai.onrender.com
+      - key: JWT_PUBLIC_KEY
+        fromService:
+          type: web
+          name: hm-identity
+          envVarKey: JWT_PUBLIC_KEY
+      - key: JWT_ISSUER
+        value: identity-service
+      - key: JWT_AUDIENCE
+        value: hostel-marketplace
+      - key: INTERNAL_SERVICE_KEY
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
